@@ -1,0 +1,6 @@
+SpeechRecognition>=3.10.0
+PocketSphinx>=5.0.0
+pyttsx3>=2.90
+pyaudio>=0.2.14
+keyboard>=0.13.5
+pywin32>=306; platform_system == "Windows"

@@ -1,14 +1,19 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-set "PYTHON_EXE=C:\Users\moksh\OneDrive\Documents\.venv-1\Scripts\python.exe"
-if exist "%PYTHON_EXE%" (
-  start "HandleAI Moksh" "%PYTHON_EXE%" "%~dp0pew.py"
-) else (
-  where py >nul 2>nul
-  if %ERRORLEVEL% EQU 0 (
-    start "HandleAI Moksh" py -3 "%~dp0pew.py"
-  ) else (
-    start "HandleAI Moksh" python "%~dp0pew.py"
-  )
+where pyw >nul 2>nul
+if %ERRORLEVEL% EQU 0 (
+  start "" pyw "%~dp0pew.py"
+  exit /b
 )
+where pythonw >nul 2>nul
+if %ERRORLEVEL% EQU 0 (
+  start "" pythonw "%~dp0pew.py"
+  exit /b
+)
+where py >nul 2>nul
+if %ERRORLEVEL% EQU 0 (
+  start "" py -3 "%~dp0pew.py"
+  exit /b
+)
+start "" python "%~dp0pew.py"
