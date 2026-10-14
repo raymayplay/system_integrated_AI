@@ -831,6 +831,14 @@ class LocalPrivateAssistant:
             "korean": "ko",
         }
         final_target = language_code.get(target, target)
+        if final_target == "ja":
+            common_phrases = {
+                "i like you": "私はあなたが好きです",
+                "i love you": "愛してる",
+            }
+            normalized_text = re.sub(r"\s+", " ", text.strip().lower()).rstrip(".!?")
+            if normalized_text in common_phrases:
+                return common_phrases[normalized_text]
 
         try:
             from googletrans import Translator  # type: ignore

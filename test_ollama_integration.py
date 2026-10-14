@@ -103,3 +103,11 @@ def test_ai_command_forwards_arbitrary_prompt_to_ollama(tmp_path, monkeypatch):
 
     assert assistant.handle_command("/ai Tell me a story") == "Model answer"
     assert sent == ["Tell me a story"]
+
+
+def test_common_japanese_translation_works_without_a_network_translator(tmp_path):
+    assistant = LocalPrivateAssistant(workspace_root=str(tmp_path))
+
+    assert assistant.translate_text("I like you", "ja") == "私はあなたが好きです"
+    assert assistant.translate_text("I love you", "ja") == "愛してる"
+    assert assistant.handle_command("what is i like you in japanese") == "私はあなたが好きです"
