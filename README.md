@@ -34,10 +34,22 @@ Getting Started
 * **Operating System:** Windows (recommended for native `taskkill` and shortcut generation hooks; core functionality is cross-platform).
 * **Python Version:** Python 3.8 or higher.
 
-To enable **Voice Input/Output** workflows, ensure the following native packages are active on your system:
+Ray's desktop UI and Ollama chat do not require extra Python packages. Create the virtual environment and install the (currently standard-library-only) base requirements with:
 ```bash
-pip install -r requirements_ray.txt
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements_ray.txt
 ```
+
+Launch Ray with:
+```bash
+.\.venv\Scripts\python.exe .\pew.py
+```
+
+Voice input/output is optional and has native microphone dependencies. Install these separately:
+```bash
+.\.venv\Scripts\python.exe -m pip install -r requirements_voice.txt
+```
+On Windows with Python 3.14, PyAudio and PocketSphinx may not have compatible prebuilt wheels; pip then needs Microsoft C++ Build Tools and CMake. If you do not need voice commands, skip this optional install—Ray's Ollama chat works without it.
 
 ### Local AI with Ollama
 
@@ -58,7 +70,7 @@ Run the focused tests from the project directory with:
 python -m pytest test_ollama_integration.py test_ai_language_features.py -q
 ```
 
-Voice commands are optional; install the packages in `requirements_ray.txt` if voice dependencies are missing, then click **VOICE COMMAND** and say “Hey Ray” followed by your command.
+Voice commands are optional; install the packages in `requirements_voice.txt` if voice dependencies are missing, then click **VOICE COMMAND** and say “Hey Ray” followed by your command.
 
 ### Start Ray with Windows
 

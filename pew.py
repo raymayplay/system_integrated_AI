@@ -1972,7 +1972,7 @@ class AssistantDesktopUI:
         self.root.geometry("1080x740")
         self.root.minsize(860, 600)
         self.root.configure(bg="#07111f")
-        self.root.option_add("*Font", "Segoe UI 10")
+        self.root.option_add("*Font", ("Segoe UI", 10))
         self._colors = {
             "background": "#07111f",
             "panel": "#0c1928",
