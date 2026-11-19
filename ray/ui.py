@@ -91,6 +91,9 @@ class RayApp:
         self.phase = 0.0
         self.speak_replies = True
         self._follow_up = False
+        self._busy = False  # a command or agent task is running
+        self._step = ""  # what the agent is doing right now
+        self._question: Optional[tuple[threading.Event, dict]] = None  # agent waiting for an answer
         self._videos: List[Video] = []
         self._playing: Optional[int] = None
         self._width = self._height = 0
@@ -114,6 +117,11 @@ class RayApp:
         self.root.bind("<Escape>", lambda _e: self.stop())
 
         self.listener.start()
+        agent = self.engine.agent
+        if agent is not None:
+            agent.ask_user = self.ask_user_blocking
+            agent.on_step = lambda text: self.post(self._set_step, text)
+            agent.on_start = lambda: self.post(self._agent_started)
         self.root.after(200, self._load_models)
         self.root.after(16, self._tick)
         self.post(self._greet)
@@ -320,9 +328,11 @@ class RayApp:
 
         caption = STATE_CAPTION[self.state]
         if self.state == "thinking":
-            caption += "." * (1 + int(t * 3) % 3)
+            caption = (self._step.rstrip("\u2026") if self._step else caption) + "." * (1 + int(t * 3) % 3)
         if self.state == "idle" and not self.listener.available:
             caption = "Type below to talk to Ray"
+        if self._question is not None and self.state in ("idle", "listening"):
+            caption = "Waiting for your answer \u00b7 say or type it"
         c.itemconfig(self.caption, text=caption)
         c.itemconfig(self.mic, fill=mix("#1b2360", CYAN, 0.55 + 0.3 * math.sin(t * 6)) if self.state == "listening" else "#1b2360")
 
@@ -334,7 +344,7 @@ class RayApp:
 
     def _speech_done(self) -> None:
         if self.state == "speaking":
-            self.set_state("idle")
+            self.set_state("thinking" if self._busy else "idle")
         if self._follow_up:
             self._follow_up = False
             self.listener.listen_now()
@@ -392,8 +402,22 @@ class RayApp:
             self.submit(text)
 
     def submit(self, text: str, from_voice: bool = False) -> None:
+        if self._question is not None:  # this is the answer to the agent's question
+            event, box = self._question
+            self._question = None
+            box["answer"] = text
+            event.set()
+            self.speaker.stop()
+            self._show(text, "")
+            self.set_state("thinking")
+            return
+        if self._busy:
+            self._show(None, "I'm still working on the last task. Press Esc to stop it.")
+            return
         self.speaker.stop()
         self._show(text, "")
+        self._busy = True
+        self._step = ""
         self.set_state("thinking")
 
         def work() -> None:
@@ -406,6 +430,8 @@ class RayApp:
         threading.Thread(target=work, daemon=True).start()
 
     def _finish(self, text: str, reply: Reply, from_voice: bool) -> None:
+        self._busy = False
+        self._step = ""
         if reply.videos:
             self._videos = reply.videos
             self._playing = self.engine.video_index
@@ -429,7 +455,48 @@ class RayApp:
     def stop(self) -> None:
         self.speaker.stop()
         self._follow_up = False
+        if self.engine.agent is not None and self._busy:
+            self.engine.agent.cancel()
+            self._step = "Stopping"
+        if self._question is not None:
+            event, box = self._question
+            self._question = None
+            box["answer"] = "no, stop"
+            event.set()
+        if self._busy:
+            return
         self.set_state("idle")
+
+    # ------------------------------------------------------------------ agent
+    def _agent_started(self) -> None:
+        if self.speak_replies and self.speaker.available:
+            self.speaker.say("On it.")
+
+    def _set_step(self, text: str) -> None:
+        self._step = text
+
+    def ask_user_blocking(self, question: str) -> str:
+        """Called from the agent's thread: ask out loud, wait for the answer."""
+        event, box = threading.Event(), {}
+        self.post(self._begin_question, question, event, box)
+        if not event.wait(timeout=600):
+            self.post(self._end_question_timeout)
+            return "(the user did not answer)"
+        return box.get("answer", "")
+
+    def _begin_question(self, question: str, event: threading.Event, box: dict) -> None:
+        self._question = (event, box)
+        self._step = "Waiting for your answer"
+        self._show(None, question)
+        if self.speak_replies and self.speaker.available:
+            self._follow_up = self.listener.available
+            self.speaker.say(question)
+        else:
+            self.set_state("idle")
+        self.entry.focus_set()
+
+    def _end_question_timeout(self) -> None:
+        self._question = None
 
     # ----------------------------------------------------------------- models
     def _load_models(self) -> None:
@@ -443,6 +510,10 @@ class RayApp:
         threading.Thread(target=work, daemon=True).start()
 
     def _models_loaded(self, models: Optional[List[str]]) -> None:
+        if self.engine.agent is not None:
+            self._models = models or []
+            self.canvas.itemconfig(self.model_label, text="\u25cf Claude agent ready", fill=GREEN)
+            return
         self._models = models or []
         brain = self.engine.brain
         if models is None:
@@ -454,6 +525,8 @@ class RayApp:
         self.canvas.itemconfig(self.model_label, text=f"● {label}  ▾", fill=GREEN if models else RED)
 
     def _model_menu(self) -> None:
+        if self.engine.agent is not None:
+            return
         if not getattr(self, "_models", None):
             self.canvas.itemconfig(self.model_label, text="● connecting…", fill=MUTED)
             self._load_models()

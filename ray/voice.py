@@ -18,6 +18,10 @@ from typing import Callable, Optional
 from .commands import find_wake_word
 
 IS_WINDOWS = os.name == "nt"
+WHISPER_HINT = (
+    "Hey Ray, open Chrome. Hey Ray, play lofi music on YouTube. Open Spotify, VS Code, WhatsApp, Bluetooth settings. "
+    "Turn on dark mode. Volume up. Book a flight. Apply for this job on LinkedIn. Ask Claude to write the code."
+)
 
 
 # ----------------------------------------------------------------------- chime
@@ -170,6 +174,9 @@ class Listener:
         self.is_speaking = is_speaking
         self.wake_enabled = os.getenv("RAY_WAKE_WORD", "1") != "0"
         self.offline = os.getenv("RAY_OFFLINE_SPEECH", "0") == "1"
+        # "auto": Whisper if installed (most accurate), else Google. Or force "whisper" / "google".
+        self.engine = os.getenv("RAY_STT", "auto").lower()
+        self._whisper = None
         self._push = threading.Event()
         self._started = False
         self.problem = self._detect()
@@ -226,7 +233,7 @@ class Listener:
                         continue
                     if self._push.is_set() or self.is_speaking():
                         continue
-                    heard, rest = find_wake_word(self._recognize(recognizer, audio, sr))
+                    heard, rest = find_wake_word(self._recognize(recognizer, audio, sr), strict=True)
                     if not heard:
                         continue
                     if rest:  # "Hey Ray, open Spotify" in one breath
@@ -242,12 +249,16 @@ class Listener:
     def _capture_command(self, recognizer, source, sr) -> None:
         self.on_state("listening")
         play_sound(WAKE_CHIME)
+        # Allow natural pauses mid-sentence ("book a table for two... at 8 pm").
+        recognizer.pause_threshold = 1.1
         try:
-            audio = recognizer.listen(source, timeout=6, phrase_time_limit=12)
+            audio = recognizer.listen(source, timeout=7, phrase_time_limit=25)
         except sr.WaitTimeoutError:
             play_sound(DONE_CHIME)
             self.on_state("idle")
             return
+        finally:
+            recognizer.pause_threshold = 0.7
         self.on_state("thinking")
         text = self._recognize(recognizer, audio, sr)
         play_sound(DONE_CHIME)
@@ -257,7 +268,40 @@ class Listener:
         else:
             self.on_error("Sorry, I didn't catch that.")
 
+    def _whisper_model(self):
+        if self._whisper is None:
+            from faster_whisper import WhisperModel  # type: ignore
+
+            size = os.getenv("RAY_WHISPER_MODEL", "small.en")
+            self._whisper = WhisperModel(size, device="auto", compute_type="int8")
+        return self._whisper
+
+    def _use_whisper(self) -> bool:
+        if self.engine == "google":
+            return False
+        try:
+            import faster_whisper  # noqa: F401  # type: ignore
+            return True
+        except ImportError:
+            return False
+
     def _recognize(self, recognizer, audio, sr) -> str:
+        if self._use_whisper():
+            try:
+                import numpy as np  # type: ignore
+
+                samples = np.frombuffer(audio.get_raw_data(convert_rate=16000, convert_width=2), np.int16)
+                segments, _ = self._whisper_model().transcribe(
+                    samples.astype(np.float32) / 32768.0,
+                    language="en",
+                    beam_size=5,
+                    vad_filter=True,
+                    # Vocabulary hint: makes app names and Ray's name come out right.
+                    initial_prompt=WHISPER_HINT,
+                )
+                return " ".join(seg.text for seg in segments).strip()
+            except Exception:
+                pass  # fall through to the other recognizers
         if not self.offline:
             try:
                 return recognizer.recognize_google(audio)

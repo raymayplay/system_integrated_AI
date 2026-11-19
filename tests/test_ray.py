@@ -41,6 +41,32 @@ class FakeSystem:
     def lock(self):
         return True
 
+    def open_settings(self, page=""):
+        self.settings = getattr(self, "settings", []) + [page]
+        return True
+
+    def set_dark_mode(self, dark):
+        self.dark = dark
+        return True
+
+    def get_brightness(self):
+        return 50
+
+    def set_brightness(self, percent):
+        self.brightness = percent
+        return True
+
+    def power(self, action):
+        self.powered = action
+        return True
+
+    def screenshot(self):
+        return True
+
+    def powershell(self, command, timeout=60):
+        self.ran = command
+        return "ok"
+
 
 class FakeBrain:
     def __init__(self, answer="Paris is the capital of France."):
@@ -62,7 +88,7 @@ def ray(tmp_path):
         searches.append(query)
         return list(VIDEOS)
 
-    engine = CommandEngine(system=FakeSystem(), brain=FakeBrain(), notes_path=tmp_path / "notes.txt", search_youtube=fake_search)
+    engine = CommandEngine(system=FakeSystem(), brain=FakeBrain(), notes_path=tmp_path / "notes.txt", search_youtube=fake_search, agent=None)
     engine.searches = searches
     return engine
 

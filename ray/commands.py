@@ -1,7 +1,8 @@
 """Turns what you say into actions.
 
 Fast, rule-based handling for everyday commands (apps, YouTube, media,
-volume...), with the local Ollama model as a fallback for everything else.
+volume, settings...). Bigger tasks (booking, applying, writing code, research)
+go to the Claude agent, and the local Ollama model is the offline fallback.
 """
 
 from __future__ import annotations
@@ -57,10 +58,26 @@ class Reply:
         return self.speech if self.speech is not None else self.text
 
 
-def find_wake_word(text: str) -> tuple[bool, str]:
-    """Return (heard_wake_word, the command spoken after it)."""
+AGENT_RE = re.compile(
+    r"\b(book|booking|reserve|buy|order|purchase|checkout|apply|application|job|jobs|fill|form|sign up|register|"
+    r"write|code|program|script|website|app for|build|create|make me|draft|compose|email|mail|message|send|reply|"
+    r"compare|research|best|cheapest|summari[sz]e|explain|plan|schedule|install|download|fix|debug|claude|"
+    r"flight|flights|hotel|ticket|tickets|restaurant|news|weather|price|how much|who is|what is|what are|why|how do|how to)\b",
+    re.I,
+)
+_QUICK_RE = re.compile(r"^(play|pause|resume|next|skip|previous|volume|mute|unmute|open|launch|start|close|quit|lock|"
+                       r"turn|set|brightness|take|search youtube|youtube|remember)\b")
+
+
+def find_wake_word(text: str, strict: bool = False) -> tuple[bool, str]:
+    """Return (heard_wake_word, the command spoken after it).
+
+    strict=True (used for the always-on microphone) only accepts the wake word
+    at the start of what was heard, so normal conversation in the room doesn't
+    trigger Ray.
+    """
     match = WAKE_RE.search(text)
-    if not match:
+    if not match or (strict and len(text[: match.start()].split()) > 1):
         return False, text.strip()
     return True, text[match.end():].strip(" ,.!?")
 
@@ -84,6 +101,7 @@ class CommandEngine:
         brain: Optional[Brain] = None,
         notes_path: Optional[Path] = None,
         search_youtube: Callable[[str], List[Video]] = youtube.search,
+        agent="auto",
     ) -> None:
         self.system = system or System()
         self.brain = brain or Brain()
@@ -91,12 +109,39 @@ class CommandEngine:
         self.search_youtube = search_youtube
         self.videos: List[Video] = []  # last YouTube results, for "play that video"
         self.video_index: Optional[int] = None  # which result is playing
+        self.pending: Optional[tuple[str, Callable[[], Reply]]] = None  # action waiting for "yes"
+        if agent == "auto":
+            from . import agent as agent_module
+
+            agent = agent_module.Agent(self.system, self._quick_command) if agent_module.configured() else None
+        self.agent = agent
+
+    def _quick_command(self, command: str) -> str:
+        return self._handle_one(clean(command), from_brain=True).text
+
+    def _instant(self, t: str) -> Optional[Reply]:
+        for handler in (self._conversation, self._clock, self._media, self._settings, self._power, self._lock):
+            reply = handler(t)
+            if reply is not None:
+                return reply
+        return None
+
+    def _needs_agent(self, t: str) -> bool:
+        if self.agent is None or self.pending:
+            return False
+        words = len(t.split())
+        if _QUICK_RE.match(t) and words <= 7 and not AGENT_RE.search(t):
+            return False
+        return bool(AGENT_RE.search(t)) or words > 10
 
     # ------------------------------------------------------------------ public
     def handle(self, raw: str) -> Reply:
         text = clean(raw)
         if not text:
             return Reply("Yes? I'm listening.", speech="Yes?")
+        if self._needs_agent(text):
+            instant = self._instant(text)  # time, volume, settings... stay instant
+            return instant or Reply(self.agent.run(raw.strip()))
         parts = [p for p in _SPLIT_RE.split(text) if p.strip()]
         if len(parts) > 1:
             replies = [self._handle_one(p.strip()) for p in parts]
@@ -111,15 +156,18 @@ class CommandEngine:
     # ---------------------------------------------------------------- dispatch
     def _handle_one(self, t: str, from_brain: bool = False) -> Reply:
         for handler in (
+            self._confirmation,
             self._conversation,
             self._clock,
             self._media,
             self._play,
             self._youtube_search,
             self._web_search,
+            self._settings,
             self._open,
             self._close,
             self._notes,
+            self._power,
             self._lock,
         ):
             reply = handler(t)
@@ -127,6 +175,8 @@ class CommandEngine:
                 return reply
         if from_brain:
             return Reply("I'm not sure how to do that yet.")
+        if self.agent is not None:
+            return Reply(self.agent.run(t))
         return self._ask_brain(t)
 
     def _ask_brain(self, t: str) -> Reply:
@@ -137,6 +187,17 @@ class CommandEngine:
         return Reply(answer)
 
     # ---------------------------------------------------------------- handlers
+    def _confirmation(self, t: str) -> Optional[Reply]:
+        if not self.pending:
+            return None
+        _question, action = self.pending
+        self.pending = None
+        if re.fullmatch(r"(yes|yeah|yep|yup|sure|ok|okay|do it|go ahead|confirm|yes please|please do)", t):
+            return action()
+        if re.fullmatch(r"(no|nope|cancel|stop|don't|do not|never ?mind|no thanks)", t):
+            return Reply("Okay, cancelled.")
+        return None  # something else entirely: drop the question and handle it normally
+
     def _conversation(self, t: str) -> Optional[Reply]:
         if re.fullmatch(r"(no|nope|no thanks|not now)", t):
             return Reply("Okay.")
@@ -329,6 +390,54 @@ class CommandEngine:
             if not notes:
                 return Reply("You haven't asked me to remember anything yet.")
             return Reply("Here's what you told me:\n- " + "\n- ".join(notes), speech="You told me: " + ". ".join(notes[-5:]))
+        return None
+
+    def _settings(self, t: str) -> Optional[Reply]:
+        page = re.fullmatch(r"(?:open|show|go to|launch)\s+(?:the\s+|my\s+)?(?:windows\s+)?(.+?)\s+settings?", t)
+        if page:
+            self.system.open_settings(page.group(1))
+            return Reply(f"Opening {page.group(1)} settings.")
+        if re.search(r"\b(?:(?:turn on|enable|switch to|use|activate) dark (?:mode|theme)|dark mode on|turn off light mode)\b", t):
+            return Reply("Dark mode is on." if self.system.set_dark_mode(True) else "I couldn't change the theme.")
+        if re.search(r"\b(?:(?:turn on|enable|switch to|use|activate) light (?:mode|theme)|light mode on|turn off dark mode|disable dark mode)\b", t):
+            return Reply("Light mode is on." if self.system.set_dark_mode(False) else "I couldn't change the theme.")
+        level = re.search(r"\bbrightness (?:to |at )?(\d{1,3})\s*(?:%|percent)?\b", t)
+        if level:
+            ok = self.system.set_brightness(int(level.group(1)))
+            return Reply(f"Brightness set to {level.group(1)} percent." if ok else "I can't control this screen's brightness.")
+        step = re.search(r"\b(brightness up|brighter|increase (?:the )?brightness|brightness down|dimmer|dim the screen|decrease (?:the )?brightness|lower (?:the )?brightness)\b", t)
+        if step:
+            current = self.system.get_brightness()
+            if current is None:
+                return Reply("I can't control this screen's brightness.")
+            up = any(w in step.group(1) for w in ("up", "brighter", "increase"))
+            self.system.set_brightness(current + (20 if up else -20))
+            return Reply("Brighter." if up else "Dimmer.", speech="")
+        toggle = re.fullmatch(r"turn (on|off) (?:the )?(wi-?fi|bluetooth|airplane mode|hotspot|night light|focus|do not disturb)", t)
+        if toggle:
+            name = toggle.group(2)
+            self.system.open_settings("wifi" if name.startswith("wi") else name)
+            return Reply(f"I opened {name} settings. Flip the switch to turn it {toggle.group(1)}.")
+        if re.fullmatch(r"(?:take a |take )?(?:screenshot|screen shot|screen capture|snip)", t):
+            self.system.screenshot()
+            return Reply("Select the area to capture.", speech="")
+        return None
+
+    def _power(self, t: str) -> Optional[Reply]:
+        device = r"(?:my |the |this )?(?:pc|computer|laptop|system|device)"
+        actions = [
+            (rf"(?:shut ?down|turn off|power off)(?: {device})?", "shutdown", "shut down"),
+            (rf"(?:restart|reboot)(?: {device})?", "restart", "restart"),
+            (rf"(?:put {device} to sleep|sleep|go to sleep)", "sleep", "put your PC to sleep"),
+            (r"(?:sign|log) (?:me )?out", "sign out", "sign you out"),
+        ]
+        for pattern, action, words in actions:
+            if re.fullmatch(pattern, t):
+                def run(a=action, w=words) -> Reply:
+                    return Reply(f"Okay, I'll {w} now." if self.system.power(a) else "I couldn't do that.")
+
+                self.pending = (f"Are you sure you want me to {words}?", run)
+                return Reply(f"Are you sure you want me to {words}?")
         return None
 
     def _lock(self, t: str) -> Optional[Reply]:

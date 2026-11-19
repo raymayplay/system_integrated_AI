@@ -90,6 +90,29 @@ FOLDERS = {
     "videos": "Videos",
 }
 
+# "open bluetooth settings" -> ms-settings:bluetooth
+SETTINGS_PAGES = {
+    "wifi": "network-wifi", "wi-fi": "network-wifi", "network": "network", "internet": "network",
+    "bluetooth": "bluetooth", "devices": "bluetooth", "display": "display", "screen": "display",
+    "brightness": "display", "night light": "nightlight", "sound": "sound", "audio": "sound",
+    "volume": "sound", "battery": "batterysaver", "power": "powersleep", "sleep": "powersleep",
+    "notifications": "notifications", "focus": "quiethours", "do not disturb": "quiethours",
+    "storage": "storagesense", "apps": "appsfeatures", "installed apps": "appsfeatures",
+    "default apps": "defaultapps", "startup apps": "startupapps", "startup": "startupapps",
+    "update": "windowsupdate", "windows update": "windowsupdate", "updates": "windowsupdate",
+    "privacy": "privacy", "camera": "privacy-webcam", "microphone": "privacy-microphone",
+    "location": "privacy-location", "personalization": "personalization", "background": "personalization-background",
+    "wallpaper": "personalization-background", "colors": "colors", "theme": "themes", "themes": "themes",
+    "dark mode": "colors", "lock screen": "lockscreen", "taskbar": "taskbar", "mouse": "mousetouchpad",
+    "touchpad": "devices-touchpad", "keyboard": "keyboard", "printer": "printers", "printers": "printers",
+    "language": "regionlanguage", "time": "dateandtime", "date": "dateandtime", "accounts": "yourinfo",
+    "account": "yourinfo", "sign in": "signinoptions", "password": "signinoptions", "vpn": "network-vpn",
+    "hotspot": "network-mobilehotspot", "airplane mode": "network-airplanemode", "about": "about",
+    "system": "display", "accessibility": "easeofaccess", "multitasking": "multitasking",
+    "clipboard": "clipboard", "gaming": "gaming-gamebar", "game mode": "gaming-gamemode",
+    "recovery": "recovery", "troubleshoot": "troubleshoot", "activation": "activation",
+}
+
 # Windows virtual-key codes for media keys.
 _VK = {
     "play_pause": 0xB3,
@@ -222,6 +245,66 @@ class System:
                     subprocess.call(cmd)
                 return True
         return False
+
+    # ----- settings ---------------------------------------------------------
+    def open_settings(self, page: str = "") -> bool:
+        key = page.lower().strip()
+        uri = SETTINGS_PAGES.get(key)
+        if uri is None:
+            match = get_close_matches(key, list(SETTINGS_PAGES), n=1, cutoff=0.75)
+            uri = SETTINGS_PAGES[match[0]] if match else ""
+        return self._start(f"ms-settings:{uri}")
+
+    def set_dark_mode(self, dark: bool) -> bool:
+        if not IS_WINDOWS:
+            return False
+        import winreg
+
+        path = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_SET_VALUE) as key:
+            for name in ("AppsUseLightTheme", "SystemUsesLightTheme"):
+                winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, 0 if dark else 1)
+        return True
+
+    def get_brightness(self) -> Optional[int]:
+        out = self.powershell("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness).CurrentBrightness")
+        try:
+            return int(out.split()[0])
+        except (ValueError, IndexError):
+            return None
+
+    def set_brightness(self, percent: int) -> bool:
+        percent = max(0, min(100, int(percent)))
+        out = self.powershell(
+            "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods)"
+            f" | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1;Brightness={percent}}}"
+        )
+        return "error" not in out.lower()
+
+    def power(self, action: str) -> bool:
+        commands = {
+            "shutdown": ["shutdown", "/s", "/t", "5"],
+            "restart": ["shutdown", "/r", "/t", "5"],
+            "sign out": ["shutdown", "/l"],
+            "sleep": ["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"],
+        }
+        if not IS_WINDOWS or action not in commands:
+            return False
+        return subprocess.call(commands[action]) == 0
+
+    def screenshot(self) -> bool:
+        return self._start("ms-screenclip:") if IS_WINDOWS else False
+
+    def powershell(self, command: str, timeout: int = 60) -> str:
+        shell = ["powershell", "-NoProfile", "-Command", command] if IS_WINDOWS else ["bash", "-lc", command]
+        try:
+            result = subprocess.run(shell, capture_output=True, text=True, timeout=timeout)
+        except FileNotFoundError as exc:
+            return f"Error: {exc}"
+        except subprocess.TimeoutExpired:
+            return "Error: the command timed out."
+        output = (result.stdout + ("\n" + result.stderr if result.stderr else "")).strip()
+        return output[:4000] or f"(finished with exit code {result.returncode})"
 
     def lock(self) -> bool:
         if IS_WINDOWS:

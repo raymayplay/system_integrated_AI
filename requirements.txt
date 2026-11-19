@@ -1,8 +1,14 @@
-# Ray's UI and commands use only the Python standard library.
-# These packages add the "Hey Ray" wake word and spoken replies.
+# Ray's UI and quick commands use only the Python standard library.
+
+# Voice: "Hey Ray" wake word and spoken replies
 SpeechRecognition>=3.10.0
 pyaudio>=0.2.14
 pyttsx3>=2.90
 pywin32>=306; platform_system == "Windows"
-# Optional offline speech recognition (used when there is no internet):
-# PocketSphinx>=5.0.0
+
+# Accurate speech recognition that runs on your PC (much better with accents and app names)
+faster-whisper>=1.0.0
+
+# Agent mode: Claude does multi-step tasks, web search, coding, and drives your browser
+anthropic>=2.0.0
+playwright>=1.45.0
