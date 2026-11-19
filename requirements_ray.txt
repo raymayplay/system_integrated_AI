@@ -1,2 +1,0 @@
-# Ray's chat UI and Ollama integration use only the Python standard library.
-# See requirements_voice.txt for optional microphone and speech support.

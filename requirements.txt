@@ -1,0 +1,8 @@
+# Ray's UI and commands use only the Python standard library.
+# These packages add the "Hey Ray" wake word and spoken replies.
+SpeechRecognition>=3.10.0
+pyaudio>=0.2.14
+pyttsx3>=2.90
+pywin32>=306; platform_system == "Windows"
+# Optional offline speech recognition (used when there is no internet):
+# PocketSphinx>=5.0.0

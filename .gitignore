@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.local_ai_memory.txt
+.local_ai_email_state.json
